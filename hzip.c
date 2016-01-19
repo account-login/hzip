@@ -25,8 +25,8 @@
 #   define setmode(a, b) ;
 #endif // _WIN32
 
-#define NAME "hzip"
-#define VERSION "0.1"
+#define APP_NAME "hzip"
+#define APP_VERSION "0.1"
 #define HUFF_BLOCK_MAX (1024 * 1024)    // 1 MiB
 
 typedef unsigned char uchar;
@@ -267,6 +267,21 @@ size_t fread_4k(void *buffer, size_t elem_size, size_t number, FILE *f)
     }
 
     return idx / elem_size;
+}
+
+size_t fread_compat(void *buffer, size_t elem_size, size_t number, FILE *f)
+{
+    int cnt;
+    #ifdef _WIN32
+    // bug: if in is stdin && len >= 1024 * 32, fread will fail
+    if(isatty(fileno(f)))
+        cnt = fread_4k(buffer, elem_size, number, f);
+    else
+        cnt = fread(buffer, elem_size, number, f);
+    #else
+    cnt = fread(buffer, elem_size, number, f);
+    #endif
+    return cnt;
 }
 
 int bitptr_diff(bitptr a, bitptr b)
@@ -898,13 +913,7 @@ bool huff_pack_file_2(const char *infn, const char *outfn)
     int cnt;
     do
     {
-#ifdef _WIN32
-        // bug: if in is stdin && len >= 1024 * 32, fread will fail
-        if(isatty(fileno(in)))
-            cnt  =fread_4k(inbuf, 1, len, in);
-        else
-#endif
-            cnt = fread(inbuf, 1, len, in);
+        cnt = fread_compat(inbuf, 1, len, in);
         bitptr outp = {.bit = 0, .byte = outbuf};
         int bits = huff_packall_2(inbuf, cnt, &outp);
         int bytes = bits / 8 + !!(bits % 8);
@@ -981,21 +990,12 @@ bool huff_unpack_file_2(const char *infn, const char *outfn)
         int bytes_read;
         if(!brk)
         {
-#ifdef _WIN32
-            if(isatty(fileno(in)))  // windows bug
-                bytes_read = fread_4k(&inbuf[data_end], 1, len - data_end, in);
-            else
-#endif
-                bytes_read = fread(&inbuf[data_end], 1, len - data_end, in);
+            bytes_read = fread_compat(&inbuf[data_end], 1, len - data_end, in);
             if(bytes_read < len - data_end)
                 brk = true;
             data_end += bytes_read;
             incnt += bytes_read;
         }
-//        else
-//        {
-//            bytes_read = data_end;
-//        }
 
         bitptr inp = {.bit = 0, .byte = inbuf};
         bitptr inp_save = inp;
@@ -1095,7 +1095,7 @@ void usage(int unknown_opt, const char *prog_name)
             "Default FILE and OUTFILE is \"-\" (stdin or stdout).\n"
             "\n",
             prog_name, prog_name);
-    fprintf(stderr, NAME " v" VERSION "\n");
+    fprintf(stderr, APP_NAME " v" APP_VERSION "\n");
     fprintf(stderr, "HUFF_BLOCK_MAX=%d\n", HUFF_BLOCK_MAX);
 }
 
@@ -1163,8 +1163,9 @@ int main(int argc, char **argv)
         case '?':
             usage(0, argv[0]);
             return EXIT_SUCCESS;
+            break;
         case 'V':
-            fprintf(stderr, NAME " v" VERSION "\n");
+            fprintf(stderr, APP_NAME " v" APP_VERSION "\n");
             fprintf(stderr, "HUFF_BLOCK_MAX=%d\n", HUFF_BLOCK_MAX);
             return EXIT_SUCCESS;
             break;
@@ -1188,17 +1189,17 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    bool status;
+    bool success;
     if(conf.decode)
     {
-        status = huff_unpack_file_2(conf.infile, conf.outfile);
+        success = huff_unpack_file_2(conf.infile, conf.outfile);
     }
     else
     {
-        status = huff_pack_file_2(conf.infile, conf.outfile);
+        success = huff_pack_file_2(conf.infile, conf.outfile);
     }
 
-    if(status == true)
+    if(success)
         return EXIT_SUCCESS;
     else
         return EXIT_FAILURE;

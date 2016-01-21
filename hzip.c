@@ -27,7 +27,13 @@
 
 #define APP_NAME "hzip"
 #define APP_VERSION "0.1"
+
+// max length of huff code is 128
+// 5702887 bytes of input can have a maxinum length of huff code of 32
 #define HUFF_BLOCK_MAX (1024 * 1024)    // 1 MiB
+#if HUFF_BLOCK_MAX > 5702887
+#   error "HUFF_BLOCK_MAX too large."
+#endif
 
 typedef unsigned char uchar;
 
@@ -41,7 +47,7 @@ typedef struct _tree
 
 typedef struct
 {
-    uchar pool[32]; // max length of huff code is 255 = 32 * 8 - 1
+    uchar pool[4];
     int len;
 } bit_obj;
 
@@ -105,7 +111,7 @@ bool huff_unpack_file_2(const char *infn, const char *outfn);
 size_t huff_unpackall_2(bitptr *in, uchar *out, int limit);
 int huff_write(uchar in, bitptr *out, bit_obj table[256]);
 unsigned int bits_read_int(bitptr *ptr, int len);
-void print_asicii(int ch);
+void print_ascii(int ch);
 int tree_cmp(tree *a, tree *b);
 tree *tree_combine(tree *left, tree *right);
 void tree_destroy(tree *t);
@@ -211,7 +217,7 @@ void tree_dump(tree *t, int level)
     for(int i = 0; i < level; i++)
         fprintf(stderr, "    ");
     //printf("%d, '%c', weight %d, at %p\n", t->byte, t->byte, t->weight, t);
-    print_asicii((int)t->byte);
+    print_ascii((int)t->byte);
     fprintf(stderr, ":%d\n", t->weight);
     if(t->left)
         tree_dump(t->left, level + 1);
@@ -219,7 +225,7 @@ void tree_dump(tree *t, int level)
         tree_dump(t->right, level + 1);
 }
 
-void print_asicii(int ch)
+void print_ascii(int ch)
 {
     if(ch == '\n')
         fprintf(stderr, "'\\n'");
@@ -351,6 +357,35 @@ void bits_write_int(bitptr *ptr, unsigned int data, int len)
     *((int *)&bits.pool) = data;
     bits_write(ptr, bits);
 }
+
+void bits_write_int_fast(bitptr *ptr, unsigned int data, int len)
+{
+    assert(len <= sizeof(int) * 8);
+    // |ddd*****|
+    // |ddd*****|wrt...
+    // |dddbbbbb|wrt...
+
+    unsigned int wrt = data >> (8 - ptr->bit);
+    ptr->byte[1] = (wrt & 0x000000ff);
+    ptr->byte[2] = (wrt & 0x0000ff00) >> 8;
+    ptr->byte[3] = (wrt & 0x00ff0000) >> 16;
+    ptr->byte[4] = (wrt & 0xff000000) >> 24;
+
+    uchar b = ptr->byte[0];
+    b <<= (8 - ptr->bit);
+    b >>= (8 - ptr->bit);   // ddd
+
+    uchar ored = data & 0x000000ff;
+    ored <<= (ptr->bit);    // bbbbb
+
+    b |= ored;
+    ptr->byte[0] = b;
+
+    ptr->bit += len;
+    ptr->byte += ptr->bit / 8;
+    ptr->bit %= 8;
+}
+#define bits_write_int bits_write_int_fast
 
 bit_obj bits_read(bitptr *in, int len)
 {
@@ -571,7 +606,13 @@ int huff_encode(const uchar *in, int len, tree *h, uchar *out)
 int huff_write(uchar in, bitptr *out, bit_obj table[256])
 {
     bitptr save = *out;
-    bits_write(out, table[in]);
+    //bits_write(out, table[in]);
+    uchar *chars = table[in].pool;
+    unsigned int i =  chars[0] | \
+                     (chars[1] << 8) | \
+                     (chars[2] << 16) | \
+                     (chars[3] << 24);
+    bits_write_int(out, i, table[in].len);
 
     return bitptr_diff(save, *out);
 }
@@ -718,7 +759,7 @@ int huff_packall_2(const uchar *in, size_t len, bitptr *out)
         for(int i = 0; i < 256; i++)
             if(c[i])
             {
-                print_asicii(i);
+                print_ascii(i);
                 fprintf(stderr, " %d, count: %d\n", i, c[i]);
             }
         fprintf(stderr, "\n");
@@ -1050,7 +1091,7 @@ void dump_table(bit_obj table[256])
         if(table[i].len != 0)
         {
             bit_obj bits = table[i];
-            print_asicii(i);
+            print_ascii(i);
             fprintf(stderr, ": ");
             dump_bin(bits.pool, bits.len);
             fprintf(stderr, "\n");
